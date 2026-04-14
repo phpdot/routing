@@ -38,7 +38,7 @@ use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use RuntimeException;
 
-final class Router implements RequestHandlerInterface
+class Router implements RequestHandlerInterface
 {
     use HttpMethodsTrait;
 
@@ -50,7 +50,7 @@ final class Router implements RequestHandlerInterface
     private array $prefixes = [];
 
     /** @var array<string> */
-    private array $hosts = [];
+    protected array $hosts = [];
 
     /** @var array<class-string<MiddlewareInterface>|Closure> */
     private array $globalMiddlewares = [];
@@ -429,7 +429,7 @@ final class Router implements RequestHandlerInterface
     /**
      * Build the full pattern by prepending the current prefix stack.
      */
-    private function buildPattern(string $pattern): string
+    protected function buildPattern(string $pattern): string
     {
         $pattern = trim($pattern, '/');
 
