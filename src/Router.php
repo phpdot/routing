@@ -20,6 +20,7 @@ use PHPdot\Routing\Compiler\PatternRegistry;
 use PHPdot\Routing\Compiler\RouteCompiler;
 use PHPdot\Routing\Contract\ControllerInterface;
 use PHPdot\Routing\Contract\MatcherInterface;
+use PHPdot\Routing\Exception\RoutingException;
 use PHPdot\Routing\Generator\UrlGenerator;
 use PHPdot\Routing\Matcher\MethodNotAllowed;
 use PHPdot\Routing\Matcher\RouteMatch;
@@ -43,6 +44,19 @@ use RuntimeException;
 class Router implements RequestHandlerInterface
 {
     use HttpMethodsTrait;
+
+    /**
+     * Request attribute holding the matched {@see Route} after dispatch.
+     *
+     * Read it through {@see MatchedRoute::from()} — never off Router instance
+     * state. The Router is a shared singleton; the request is per-coroutine.
+     */
+    public const string ROUTE_ATTRIBUTE = '_route';
+
+    /**
+     * Request attribute holding the matched route's typed parameters.
+     */
+    public const string ROUTE_PARAMS_ATTRIBUTE = '_route_params';
 
     private RouteCollection $routes;
     private PatternRegistry $patterns;
@@ -72,8 +86,6 @@ class Router implements RequestHandlerInterface
      * @var Closure(ServerRequestInterface): ResponseInterface|null
      */
     private Closure|null $fallback = null;
-
-    private RouteMatch|null $lastMatch = null;
 
     private string $basePath = '';
 
@@ -229,7 +241,7 @@ class Router implements RequestHandlerInterface
     {
         $name = $scope->getName();
         if (isset($this->scopes[$name])) {
-            throw new RuntimeException("Scope '{$name}' already exists.");
+            throw new RoutingException("Scope '{$name}' already exists.");
         }
         $this->scopes[$name] = $scope;
 
@@ -262,7 +274,7 @@ class Router implements RequestHandlerInterface
     public function getScope(string $name): RouteScope
     {
         if (!isset($this->scopes[$name])) {
-            throw new RuntimeException("Scope '{$name}' not found.");
+            throw new RoutingException("Scope '{$name}' not found.");
         }
 
         return $this->scopes[$name];
@@ -331,13 +343,7 @@ class Router implements RequestHandlerInterface
     {
         $matcher = $this->matcher ?? $this->compiledMatcher();
 
-        $result = $matcher->match($method, $segments, $host);
-
-        if ($result instanceof RouteMatch) {
-            $this->lastMatch = $result;
-        }
-
-        return $result;
+        return $matcher->match($method, $segments, $host);
     }
 
     /**
@@ -371,8 +377,8 @@ class Router implements RequestHandlerInterface
             foreach ($params as $key => $value) {
                 $routedRequest = $routedRequest->withAttribute($key, $value);
             }
-            $routedRequest = $routedRequest->withAttribute('_route', $route);
-            $routedRequest = $routedRequest->withAttribute('_route_params', $params);
+            $routedRequest = $routedRequest->withAttribute(self::ROUTE_ATTRIBUTE, $route);
+            $routedRequest = $routedRequest->withAttribute(self::ROUTE_PARAMS_ATTRIBUTE, $params);
 
             $middlewares = array_merge($this->globalMiddlewares, $route->getMiddlewares());
 
@@ -418,31 +424,7 @@ class Router implements RequestHandlerInterface
      */
     public function getUrlGenerator(): UrlGenerator
     {
-        return new UrlGenerator($this->routes);
-    }
-
-    /**
-     * Get the last matched route from the most recent dispatch.
-     *
-     * @return ?RouteMatch
-     */
-    public function getLastMatch(): RouteMatch|null
-    {
-        return $this->lastMatch;
-    }
-
-    /**
-     * Get matched routes from the most recent dispatch.
-     *
-     * @return array<RouteMatch>
-     */
-    public function getMatchedRoutes(): array
-    {
-        if ($this->lastMatch === null) {
-            return [];
-        }
-
-        return [$this->lastMatch];
+        return new UrlGenerator($this->routes, $this->basePath);
     }
 
     /**
@@ -468,6 +450,13 @@ class Router implements RequestHandlerInterface
     /**
      * Get named routes that have been marked as exposed.
      *
+     * Assembled through the same Path::deployed() call url() uses, from the
+     * same parsed segments, so a client building links from this map produces
+     * the identical strings the server generates — including the deployment
+     * base path. Built from the raw pattern instead, a group's index route
+     * came out '/admin/sdp/' here and '/admin/sdp' there: the same route, two
+     * strings, and any comparison between them wrong.
+     *
      * @return array<string, string>
      */
     public function exposed(): array
@@ -476,7 +465,7 @@ class Router implements RequestHandlerInterface
         foreach ($this->routes->getExposed() as $route) {
             $name = $route->getName();
             if ($name !== null) {
-                $map[$name] = '/' . ltrim($route->getPattern(), '/');
+                $map[$name] = Path::deployed($this->basePath, $route->getSegments());
             }
         }
 
@@ -539,7 +528,7 @@ class Router implements RequestHandlerInterface
     {
         $this->compile();
 
-        return $this->matcher ?? throw new RuntimeException('Compilation failed.');
+        return $this->matcher ?? throw new RoutingException('Compilation failed.');
     }
 
     /**
@@ -576,13 +565,12 @@ class Router implements RequestHandlerInterface
         Route $route,
         array $params,
     ): ResponseInterface {
-        $handler = new class ($this->container, $this->responseFactory, $route, $params) implements RequestHandlerInterface {
+        $handler = new class ($this->container, $route, $params) implements RequestHandlerInterface {
             /**
              * @param array<string, mixed> $params
              */
             public function __construct(
                 private readonly ContainerInterface $container,
-                private readonly ResponseFactoryInterface $responseFactory,
                 private readonly Route $route,
                 private readonly array $params,
             ) {}
@@ -604,44 +592,58 @@ class Router implements RequestHandlerInterface
                         return $result;
                     }
 
-                    return $this->responseFactory->createResponse(200);
+                    throw $this->nonResponseException($result);
                 }
 
                 if (is_string($routeHandler)) {
                     if (!str_contains($routeHandler, '@')) {
-                        throw new RuntimeException("Handler string must be 'Class@method' format.");
+                        throw new RoutingException("Handler string must be 'Class@method' format.");
                     }
                     [$class, $method] = explode('@', $routeHandler, 2);
                 } elseif (is_array($routeHandler)) {
                     [$class, $method] = $routeHandler;
                 } else {
-                    throw new RuntimeException('Invalid handler format.');
+                    throw new RoutingException('Invalid handler format.');
                 }
 
                 $instance = $this->container->get($class);
                 if (!is_object($instance)) {
-                    throw new RuntimeException("Container returned non-object for '{$class}'.");
+                    throw new RoutingException("Container returned non-object for '{$class}'.");
                 }
 
                 if (!$instance instanceof ControllerInterface) {
-                    throw new RuntimeException("'{$class}' must implement ControllerInterface.");
+                    throw new RoutingException("'{$class}' must implement ControllerInterface.");
                 }
 
-                if (!method_exists($instance, $method)) {
-                    throw new RuntimeException("Method '{$class}::{$method}' does not exist.");
+                if (!is_callable([$instance, $method])) {
+                    throw new RoutingException("Method '{$class}::{$method}' does not exist or is not public.");
                 }
 
-                /**
-                 * @var callable $callable
-                 */
-                $callable = [$instance, $method];
-                $result = $callable($request, ...array_values($this->params));
+                $action = Closure::fromCallable([$instance, $method]);
+                $result = $action($request, ...array_values($this->params));
 
                 if ($result instanceof ResponseInterface) {
                     return $result;
                 }
 
-                return $this->responseFactory->createResponse(200);
+                throw $this->nonResponseException($result);
+            }
+
+            /**
+             * A handler returned something other than a ResponseInterface. Fail
+             * loud rather than silently emitting an empty 200.
+             *
+             * @param mixed $result
+             */
+            private function nonResponseException(mixed $result): RuntimeException
+            {
+                return new RuntimeException(sprintf(
+                    'Route handler for %s %s must return a %s, got %s.',
+                    implode(',', $this->route->getMethods()),
+                    $this->route->getPattern(),
+                    ResponseInterface::class,
+                    get_debug_type($result),
+                ));
             }
         };
 
@@ -667,10 +669,17 @@ class Router implements RequestHandlerInterface
                      */
                     public function handle(ServerRequestInterface $request): ResponseInterface
                     {
-                        /**
-                         * @var ResponseInterface
-                         */
-                        return ($this->middleware)($request, $this->next);
+                        $response = ($this->middleware)($request, $this->next);
+
+                        if (!$response instanceof ResponseInterface) {
+                            throw new RoutingException(sprintf(
+                                'Closure middleware must return a %s, got %s.',
+                                ResponseInterface::class,
+                                get_debug_type($response),
+                            ));
+                        }
+
+                        return $response;
                     }
                 };
             } else {
@@ -679,7 +688,7 @@ class Router implements RequestHandlerInterface
                  */
                 $resolved = $this->container->get($middleware);
                 if (!$resolved instanceof MiddlewareInterface) {
-                    throw new RuntimeException("'{$middleware}' must implement MiddlewareInterface.");
+                    throw new RoutingException("'{$middleware}' must implement MiddlewareInterface.");
                 }
                 $pipeline = new class ($resolved, $pipeline) implements RequestHandlerInterface {
                     /**

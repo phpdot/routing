@@ -13,10 +13,10 @@ declare(strict_types=1);
 
 namespace PHPdot\Routing\Compiler;
 
+use PHPdot\Routing\Exception\RoutingException;
 use PHPdot\Routing\Matcher\TrieNode;
 use PHPdot\Routing\Route\Route;
 use PHPdot\Routing\Route\RouteCollection;
-use RuntimeException;
 
 final class RouteCompiler
 {
@@ -84,7 +84,7 @@ final class RouteCompiler
      * @param Route $route Route being inserted
      * @param array<string, string> $where Parameter constraint overrides
      *
-     * @throws RuntimeException If a duplicate route is detected
+     * @throws RoutingException If a duplicate route is detected
      *
      * @return void
      */
@@ -143,7 +143,7 @@ final class RouteCompiler
             if (isset($node->leaves[$method])) {
                 $existing = $node->leaves[$method]->getPattern();
                 $new = $route->getPattern();
-                throw new RuntimeException("Duplicate route: {$method} /{$new} conflicts with {$method} /{$existing}");
+                throw new RoutingException("Duplicate route: {$method} /{$new} conflicts with {$method} /{$existing}");
             }
             $node->leaves[$method] = $route;
         }

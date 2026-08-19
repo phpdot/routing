@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace PHPdot\Routing\Tests\Unit\Generator;
 
-use InvalidArgumentException;
 use PHPdot\Http\Factory\ResponseFactory;
+use PHPdot\Routing\Exception\RoutingException;
 use PHPdot\Routing\Generator\UrlGenerator;
 use PHPdot\Routing\Route\Route;
 use PHPdot\Routing\Route\RouteCollection;
@@ -59,6 +59,20 @@ final class UrlGeneratorTest extends TestCase
         $c->add($route);
 
         self::assertSame('/', $this->generator($c)->generate('home'));
+    }
+
+    #[Test]
+    public function encodesPathParameters(): void
+    {
+        $c = $this->collection();
+        $route = new Route(['GET'], 'search/{q}', ['search', '{q}'], fn() => null);
+        $route->name('search');
+        $c->add($route);
+
+        // spaces, slashes, and unicode must be percent-encoded — never emitted raw.
+        self::assertSame('/search/hello%20world', $this->generator($c)->generate('search', ['q' => 'hello world']));
+        self::assertSame('/search/a%2Fb', $this->generator($c)->generate('search', ['q' => 'a/b']));
+        self::assertSame('/search/caf%C3%A9', $this->generator($c)->generate('search', ['q' => 'café']));
     }
 
     // ── Dynamic parameters ──
@@ -155,7 +169,7 @@ final class UrlGeneratorTest extends TestCase
         $route->name('docs.show');
         $c->add($route);
 
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(RoutingException::class);
         $this->expectExceptionMessage("Wildcard parameter 'path'");
 
         $this->generator($c)->generate('docs.show');
@@ -206,7 +220,7 @@ final class UrlGeneratorTest extends TestCase
     {
         $c = $this->collection();
 
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(RoutingException::class);
         $this->expectExceptionMessage("Route 'nonexistent' not found");
 
         $this->generator($c)->generate('nonexistent');
@@ -220,7 +234,7 @@ final class UrlGeneratorTest extends TestCase
         $route->name('users.show');
         $c->add($route);
 
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(RoutingException::class);
         $this->expectExceptionMessage("Missing required parameter 'id'");
 
         $this->generator($c)->generate('users.show');

@@ -183,4 +183,80 @@ final class BasePathTest extends TestCase
 
         self::assertSame('list', (string) $response->getBody());
     }
+
+    // ── Generation (a generated URL must reach the route it names) ──
+
+    #[Test]
+    public function generatedUrlIncludesTheBasePath(): void
+    {
+        $this->router->setBasePath('/app');
+        $this->router->get('/users', fn(): ResponseInterface => new Response(200))->name('users');
+
+        self::assertSame('/app/users', $this->router->url('users'));
+    }
+
+    #[Test]
+    public function generatedUrlWithParametersIncludesTheBasePath(): void
+    {
+        $this->router->setBasePath('/api/v1');
+        $this->router->get('/users/{id:int}', fn(): ResponseInterface => new Response(200))->name('users.show');
+
+        self::assertSame('/api/v1/users/7', $this->router->url('users.show', ['id' => 7]));
+        self::assertSame('/api/v1/users/7?page=2', $this->router->url('users.show', ['id' => 7], ['page' => 2]));
+    }
+
+    #[Test]
+    public function generatedRootUrlIsTheBasePathWithoutTrailingSlash(): void
+    {
+        $this->router->setBasePath('/app');
+        $this->router->get('/', fn(): ResponseInterface => new Response(200))->name('home');
+
+        self::assertSame('/app', $this->router->url('home'));
+    }
+
+    #[Test]
+    public function generatedUrlRoundTripsBackToItsRoute(): void
+    {
+        $this->router->setBasePath('/app');
+        $this->router->get('/users/{id:int}', fn(): ResponseInterface => new Response(200, [], 'ok'))->name('users.show');
+        $this->router->compile();
+
+        $response = $this->router->handle($this->request('GET', $this->router->url('users.show', ['id' => 7])));
+
+        self::assertSame('ok', (string) $response->getBody());
+    }
+
+    #[Test]
+    public function generatedUrlIsUnchangedWithoutABasePath(): void
+    {
+        $this->router->get('/users', fn(): ResponseInterface => new Response(200))->name('users');
+
+        self::assertSame('/users', $this->router->url('users'));
+    }
+
+    // ── Exposed map (a client must build the same strings the server does) ──
+
+    #[Test]
+    public function exposedMapMatchesGeneratedUrls(): void
+    {
+        $this->router->get('/users', fn(): ResponseInterface => new Response(200))->name('users')->expose();
+        $this->router->group('sdp', static function ($group): void {
+            $group->get('', fn(): ResponseInterface => new Response(200))->name('sdp.index')->expose();
+        });
+
+        $exposed = $this->router->exposed();
+
+        self::assertSame($this->router->url('users'), $exposed['users']);
+        self::assertSame($this->router->url('sdp.index'), $exposed['sdp.index']);
+        self::assertSame('/sdp', $exposed['sdp.index']);
+    }
+
+    #[Test]
+    public function exposedMapIncludesTheBasePath(): void
+    {
+        $this->router->setBasePath('/app');
+        $this->router->get('/users/{id:int}', fn(): ResponseInterface => new Response(200))->name('users.show')->expose();
+
+        self::assertSame(['users.show' => '/app/users/{id:int}'], $this->router->exposed());
+    }
 }

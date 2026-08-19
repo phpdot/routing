@@ -262,6 +262,66 @@ final class TrieMatcherTest extends TestCase
         self::assertSame(42, $result->getParameter('id'));
     }
 
+    // ── Method- and host-aware matching ──
+
+    #[Test]
+    public function matchesSiblingDynamicRouteAcceptingTheMethod(): void
+    {
+        // Two dynamic siblings at the same position with different methods: GET {id}, POST {slug}.
+        $c = $this->collection();
+        $byId = new Route(['GET'], 'users/{id}', ['users', '{id}'], fn() => null);
+        $bySlug = new Route(['POST'], 'users/{slug}', ['users', '{slug}'], fn() => null);
+        $c->add($byId);
+        $c->add($bySlug);
+        $matcher = $this->buildMatcher($c);
+
+        $result = $matcher->match('POST', ['users', '42']);
+
+        self::assertInstanceOf(RouteMatch::class, $result);
+        self::assertSame($bySlug, $result->getRoute());
+    }
+
+    #[Test]
+    public function returnsUnionOfAllowedMethodsAcrossSiblingDynamics(): void
+    {
+        $c = $this->collection();
+        $c->add(new Route(['GET'], 'users/{id}', ['users', '{id}'], fn() => null));
+        $c->add(new Route(['POST'], 'users/{slug}', ['users', '{slug}'], fn() => null));
+        $matcher = $this->buildMatcher($c);
+
+        $result = $matcher->match('PUT', ['users', '42']);
+
+        self::assertInstanceOf(MethodNotAllowed::class, $result);
+        self::assertContains('GET', $result->allowedMethods);
+        self::assertContains('POST', $result->allowedMethods);
+    }
+
+    #[Test]
+    public function backtracksPastHostMismatchToSiblingRoute(): void
+    {
+        // A host-scoped /users/{id} and a general /{controller}/{id} (no host).
+        // On a non-matching host, the scoped route must not shadow the general one.
+        $c = $this->collection();
+        $general = new Route(['GET'], '{controller}/{id}', ['{controller}', '{id}'], fn() => null);
+        $c->add($general);
+        $hosted = new Route(['GET'], 'users/{id}', ['users', '{id}'], fn() => null);
+        $hosted->host('admin.example.com');
+        $c->add($hosted);
+        $matcher = $this->buildMatcher($c);
+
+        $public = $matcher->match('GET', ['users', '42'], 'public.example.com');
+
+        self::assertInstanceOf(RouteMatch::class, $public);
+        self::assertSame($general, $public->getRoute());
+        self::assertSame('users', $public->getParameter('controller'));
+
+        // On the scoped host, the more specific static route still wins.
+        $admin = $matcher->match('GET', ['users', '42'], 'admin.example.com');
+
+        self::assertInstanceOf(RouteMatch::class, $admin);
+        self::assertSame($hosted, $admin->getRoute());
+    }
+
     // ── Root path ──
 
     #[Test]

@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 namespace PHPdot\Routing\Compiler;
 
-use InvalidArgumentException;
+use PHPdot\Routing\Exception\RoutingException;
 
 final class PatternRegistry
 {
@@ -51,7 +51,7 @@ final class PatternRegistry
      * @param string $name Pattern type name
      * @param string $regex Regex pattern (must not contain unsafe constructs)
      *
-     * @throws InvalidArgumentException If the regex is invalid or uses unsafe constructs
+     * @throws RoutingException If the regex is invalid or uses unsafe constructs
      *
      * @return void
      */
@@ -127,18 +127,18 @@ final class PatternRegistry
      *
      * @param string $regex Pattern to validate
      *
-     * @throws InvalidArgumentException If the regex is invalid or uses unsafe constructs
+     * @throws RoutingException If the regex is invalid or uses unsafe constructs
      *
      * @return void
      */
     private function validateRegex(string $regex): void
     {
         if (preg_match('/\(\?[<=!]|\(\?P[<=]|\(\?\(|\(\?R\)|\(\?\d|\\\\\d/', $regex) === 1) {
-            throw new InvalidArgumentException("Pattern contains unsafe regex constructs: '{$regex}'");
+            throw new RoutingException("Pattern contains unsafe regex constructs: '{$regex}'");
         }
 
         if (@preg_match('/^' . $regex . '$/', '') === false) {
-            throw new InvalidArgumentException("Invalid regex pattern: '{$regex}'");
+            throw new RoutingException("Invalid regex pattern: '{$regex}'");
         }
     }
 }

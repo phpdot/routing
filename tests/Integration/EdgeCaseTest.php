@@ -8,6 +8,7 @@ use PHPdot\Http\Factory\ResponseFactory;
 use PHPdot\Http\Message\Response;
 use PHPdot\Http\Message\ServerRequest;
 use PHPdot\Routing\Contract\ControllerInterface;
+use PHPdot\Routing\Exception\RoutingException;
 use PHPdot\Routing\Route\RouteGroup;
 use PHPdot\Routing\Route\RouteScope;
 use PHPdot\Routing\Router;
@@ -286,6 +287,102 @@ final class EdgeCaseTest extends TestCase
         $response = $this->router->handle($this->request('GET', '/data'));
 
         self::assertSame('applied', $response->getHeaderLine('X-Middleware'));
+    }
+
+    #[Test]
+    public function scopeAppliesHosts(): void
+    {
+        $scope = new RouteScope('admin');
+        $scope->host('admin.example.com');
+        $this->router->addScope($scope);
+
+        $route = $this->router->get('/data', fn() => new Response(200, [], 'scoped'));
+        $route->scope($this->router->getScope('admin'));
+        $this->router->compile();
+
+        $allowed = new ServerRequest('GET', '/data', ['Host' => 'admin.example.com']);
+        $refused = new ServerRequest('GET', '/data', ['Host' => 'public.example.com']);
+
+        self::assertSame(200, $this->router->handle($allowed)->getStatusCode());
+        self::assertSame(404, $this->router->handle($refused)->getStatusCode());
+    }
+
+    #[Test]
+    public function scopeAppliesPathAsPrefix(): void
+    {
+        $scope = new RouteScope('admin');
+        $scope->path('/admin');
+        $this->router->addScope($scope);
+
+        $route = $this->router->get('/sdp', fn() => new Response(200, [], 'scoped'));
+        $route->name('sdp');
+        $route->scope($this->router->getScope('admin'));
+        $this->router->compile();
+
+        self::assertSame('admin/sdp', $route->getPattern());
+        self::assertSame(['admin', 'sdp'], $route->getSegments());
+        self::assertSame('/admin/sdp', $this->router->url('sdp'));
+        self::assertSame(200, $this->router->handle($this->request('GET', '/admin/sdp'))->getStatusCode());
+        self::assertSame(404, $this->router->handle($this->request('GET', '/sdp'))->getStatusCode());
+    }
+
+    #[Test]
+    public function scopePathPrefixesNestedGroupsExactlyOnce(): void
+    {
+        $scope = new RouteScope('admin');
+        $scope->path('/admin');
+        $this->router->addScope($scope);
+
+        $this->router->group('sdp', static function (RouteGroup $sdp): void {
+            $sdp->get('', fn() => new Response(200, [], 'overview'))->name('sdp:overview');
+
+            $sdp->group('countries', static function (RouteGroup $countries): void {
+                $countries->get('', fn() => new Response(200, [], 'countries'))->name('sdp:countries');
+                $countries->get('/{id:int}', fn() => new Response(200, [], 'country'))->name('sdp:countries.show');
+            });
+        })->scope($this->router->getScope('admin'));
+
+        $this->router->compile();
+
+        self::assertSame('/admin/sdp', $this->router->url('sdp:overview'));
+        self::assertSame('/admin/sdp/countries', $this->router->url('sdp:countries'));
+        self::assertSame('/admin/sdp/countries/7', $this->router->url('sdp:countries.show', ['id' => 7]));
+
+        self::assertSame('countries', (string) $this->router->handle($this->request('GET', '/admin/sdp/countries'))->getBody());
+        self::assertSame(404, $this->router->handle($this->request('GET', '/sdp/countries'))->getStatusCode());
+        self::assertSame(404, $this->router->handle($this->request('GET', '/admin/admin/sdp'))->getStatusCode());
+    }
+
+    #[Test]
+    public function scopeWithoutPathLeavesPatternUnchanged(): void
+    {
+        $scope = new RouteScope('admin');
+        $scope->middleware(StubMiddleware::class);
+        $this->router->addScope($scope);
+
+        $route = $this->router->get('/data', fn() => new Response(200, [], 'scoped'));
+        $route->scope($this->router->getScope('admin'));
+
+        self::assertSame('data', $route->getPattern());
+        self::assertSame(['data'], $route->getSegments());
+    }
+
+    #[Test]
+    public function scopeAppliedTwiceThrowsAndLeavesPatternIntact(): void
+    {
+        $scope = new RouteScope('admin');
+        $scope->path('/admin');
+        $this->router->addScope($scope);
+
+        $route = $this->router->get('/sdp', fn() => new Response(200, [], 'scoped'));
+        $route->scope($this->router->getScope('admin'));
+
+        try {
+            $route->scope($this->router->getScope('admin'));
+            self::fail('Applying a scope twice must throw.');
+        } catch (RoutingException) {
+            self::assertSame('admin/sdp', $route->getPattern());
+        }
     }
 
     #[Test]

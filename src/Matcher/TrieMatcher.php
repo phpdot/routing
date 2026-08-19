@@ -5,8 +5,13 @@ declare(strict_types=1);
 /**
  * Trie Matcher
  *
- * Walks the compiled segment trie to match a request.
- * O(depth) matching regardless of route count.
+ * Walks the compiled segment trie to match a request. Matching is method- and
+ * host-aware: a terminal is accepted only if it carries the requested method
+ * (GET stands in for HEAD) and its host constraint is satisfied, and the walk
+ * keeps searching sibling branches when a terminal does not qualify — so a
+ * sibling dynamic route or an unhosted route is never shadowed into a spurious
+ * 404/405. O(depth) for the matched path; a full traversal runs only to decide
+ * 405 vs 404 when nothing matched.
  *
  * @author Omar Hamdan <omar@phpdot.com>
  * @license MIT
@@ -47,66 +52,67 @@ final class TrieMatcher implements MatcherInterface
          * @var array<string, string|null> $paramTypes
          */
         $paramTypes = [];
-        $node = $this->walk($this->root, $segments, 0, $params, $paramTypes);
 
-        if ($node === null) {
-            return null;
-        }
+        $route = $this->findMatch($this->root, $segments, 0, $method, $host, $params, $paramTypes);
 
-        if (isset($node->leaves[$method])) {
-            $route = $node->leaves[$method];
-            if (!$this->hostMatches($route, $host)) {
-                return null;
-            }
-
+        if ($route !== null) {
             return new RouteMatch($route, $this->castParams($params, $paramTypes));
         }
 
-        if ($method === 'HEAD' && isset($node->leaves['GET'])) {
-            $route = $node->leaves['GET'];
-            if (!$this->hostMatches($route, $host)) {
-                return null;
-            }
+        $allowed = $this->collectAllowed($this->root, $segments, 0, $host);
 
-            return new RouteMatch($route, $this->castParams($params, $paramTypes));
-        }
-
-        if ($node->allowedMethods !== []) {
-            return new MethodNotAllowed($node->allowedMethods);
+        if ($allowed !== []) {
+            return new MethodNotAllowed($allowed);
         }
 
         return null;
     }
 
     /**
-     * Walk the trie depth-first with backtracking.
+     * Depth-first search for the first method- and host-matching terminal.
      *
-     * Priority: static children (hash lookup), dynamic children (regex), wildcard.
+     * Priority: static children (hash lookup), then dynamic children (regex),
+     * then the wildcard slot. A terminal is accepted only via {@see leafFor()} /
+     * {@see wildcardRouteFor()}; non-qualifying terminals are skipped and the
+     * search continues into sibling branches, so a sibling that does qualify is
+     * never shadowed.
      *
      * @param TrieNode $node Current trie node
      * @param array<string> $segments URL path segments
      * @param int $depth Current segment depth
+     * @param string $method HTTP method
+     * @param string $host Request hostname
      * @param array<string, string> $params Accumulated parameter values (passed by reference)
      * @param array<string, string|null> $paramTypes Accumulated parameter types (passed by reference)
      *
-     * @return TrieNode|null Matching leaf node, or null if no match
+     * @return Route|null Matching route, or null if no qualifying terminal is reachable
      */
-    private function walk(TrieNode $node, array $segments, int $depth, array &$params, array &$paramTypes): TrieNode|null
-    {
-        $segmentCount = count($segments);
-
-        if ($depth === $segmentCount) {
-            if ($node->leaves !== [] || $node->allowedMethods !== []) {
-                return $node;
-            }
-
-            return null;
+    private function findMatch(
+        TrieNode $node,
+        array $segments,
+        int $depth,
+        string $method,
+        string $host,
+        array &$params,
+        array &$paramTypes,
+    ): Route|null {
+        if ($depth === count($segments)) {
+            return $this->leafFor($node, $method, $host);
         }
 
         $segment = $segments[$depth];
 
         if (isset($node->staticChildren[$segment])) {
-            $result = $this->walk($node->staticChildren[$segment], $segments, $depth + 1, $params, $paramTypes);
+            $result = $this->findMatch(
+                $node->staticChildren[$segment],
+                $segments,
+                $depth + 1,
+                $method,
+                $host,
+                $params,
+                $paramTypes,
+            );
+
             if ($result !== null) {
                 return $result;
             }
@@ -119,7 +125,16 @@ final class TrieMatcher implements MatcherInterface
                 $params[$child['name']] = $segment;
                 $paramTypes[$child['name']] = $child['pattern'];
 
-                $result = $this->walk($child['node'], $segments, $depth + 1, $params, $paramTypes);
+                $result = $this->findMatch(
+                    $child['node'],
+                    $segments,
+                    $depth + 1,
+                    $method,
+                    $host,
+                    $params,
+                    $paramTypes,
+                );
+
                 if ($result !== null) {
                     return $result;
                 }
@@ -130,18 +145,153 @@ final class TrieMatcher implements MatcherInterface
         }
 
         if ($node->wildcard !== null) {
-            $remaining = array_slice($segments, $depth);
-            $params[$node->wildcard['name']] = implode('/', $remaining);
-            $paramTypes[$node->wildcard['name']] = '*';
+            $route = $this->wildcardRouteFor($node->wildcard, $method, $host);
 
-            $wildcardNode = new TrieNode();
-            $wildcardNode->leaves = $node->wildcard['route_methods'];
-            $wildcardNode->allowedMethods = array_keys($wildcardNode->leaves);
+            if ($route !== null) {
+                $params[$node->wildcard['name']] = implode('/', array_slice($segments, $depth));
+                $paramTypes[$node->wildcard['name']] = '*';
 
-            return $wildcardNode;
+                return $route;
+            }
         }
 
         return null;
+    }
+
+    /**
+     * Collect the union of allowed methods across every host-matching terminal
+     * reachable for the path. Runs only when {@see findMatch()} found nothing,
+     * to distinguish 405 (path exists under a different method) from 404.
+     *
+     * @param TrieNode $node Current trie node
+     * @param array<string> $segments URL path segments
+     * @param int $depth Current segment depth
+     * @param string $host Request hostname
+     *
+     * @return list<string>
+     */
+    private function collectAllowed(TrieNode $node, array $segments, int $depth, string $host): array
+    {
+        if ($depth === count($segments)) {
+            return $this->allowedFromLeaves($node, $host);
+        }
+
+        $segment = $segments[$depth];
+        $allowed = [];
+
+        if (isset($node->staticChildren[$segment])) {
+            $allowed = array_merge(
+                $allowed,
+                $this->collectAllowed($node->staticChildren[$segment], $segments, $depth + 1, $host),
+            );
+        }
+
+        foreach ($node->dynamicChildren as $child) {
+            if (preg_match('/^' . $child['regex'] . '$/', $segment) === 1) {
+                $allowed = array_merge(
+                    $allowed,
+                    $this->collectAllowed($child['node'], $segments, $depth + 1, $host),
+                );
+            }
+        }
+
+        if ($node->wildcard !== null) {
+            $allowed = array_merge($allowed, $this->wildcardAllowed($node->wildcard, $host));
+        }
+
+        return array_values(array_unique($allowed));
+    }
+
+    /**
+     * The route a leaf node serves for the method (GET for HEAD) when its host
+     * matches, or null.
+     *
+     * @param TrieNode $node
+     * @param string $method
+     * @param string $host
+     *
+     * @return Route|null
+     */
+    private function leafFor(TrieNode $node, string $method, string $host): Route|null
+    {
+        $route = $node->leaves[$method] ?? null;
+
+        if ($route === null && $method === 'HEAD') {
+            $route = $node->leaves['GET'] ?? null;
+        }
+
+        if ($route === null) {
+            return null;
+        }
+
+        return $this->hostMatches($route, $host) ? $route : null;
+    }
+
+    /**
+     * The route a wildcard slot serves for the method (GET for HEAD) when its
+     * host matches, or null.
+     *
+     * @param array{name: string, route_methods: array<string, Route>} $wildcard
+     * @param string $method
+     * @param string $host
+     *
+     * @return Route|null
+     */
+    private function wildcardRouteFor(array $wildcard, string $method, string $host): Route|null
+    {
+        $route = $wildcard['route_methods'][$method] ?? null;
+
+        if ($route === null && $method === 'HEAD') {
+            $route = $wildcard['route_methods']['GET'] ?? null;
+        }
+
+        if ($route === null) {
+            return null;
+        }
+
+        return $this->hostMatches($route, $host) ? $route : null;
+    }
+
+    /**
+     * Methods served by a node's leaves whose host matches the request.
+     *
+     * @param TrieNode $node
+     * @param string $host
+     *
+     * @return list<string>
+     */
+    private function allowedFromLeaves(TrieNode $node, string $host): array
+    {
+        $allowed = [];
+
+        foreach ($node->leaves as $method => $route) {
+            if ($this->hostMatches($route, $host)) {
+                $allowed[] = $method;
+            }
+        }
+
+        return $allowed;
+    }
+
+    /**
+     * Methods served by a wildcard slot whose host matches the request.
+     *
+     * @param array{name: string, route_methods: array<string, Route>} $wildcard
+     * @param string $host
+     *
+     * @return list<string>
+     */
+    private function wildcardAllowed(array $wildcard, string $host): array
+    {
+        $allowed = [];
+
+        foreach ($wildcard['route_methods'] as $method => $route) {
+            if ($this->hostMatches($route, $host)) {
+                $allowed[] = $method;
+            }
+        }
+
+        return $allowed;
     }
 
     /**

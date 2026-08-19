@@ -48,6 +48,32 @@ final class DispatchTest extends TestCase
         self::assertSame('hello', (string) $response->getBody());
     }
 
+    // ── Non-Response contract (fail-loud) ──
+
+    #[Test]
+    public function throwsWhenClosureHandlerReturnsNonResponse(): void
+    {
+        $this->router->get('/array', static fn(ServerRequestInterface $req): array => ['not', 'a', 'response']);
+        $this->router->compile();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('must return a');
+
+        $this->router->handle($this->request('GET', '/array'));
+    }
+
+    #[Test]
+    public function throwsWhenControllerHandlerReturnsNonResponse(): void
+    {
+        $this->router->get('/broken', [StubController::class, 'broken']);
+        $this->router->compile();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('must return a');
+
+        $this->router->handle($this->request('GET', '/broken'));
+    }
+
     #[Test]
     public function closureReceivesRouteParams(): void
     {

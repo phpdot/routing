@@ -53,9 +53,11 @@ Route parameters can be typed (`{id:int}`), optional, or catch-all; handlers are
 middleware:
 
 ```php
-$router->group(['prefix' => '/admin'], function ($r) {
-    $r->get('/dashboard', [DashboardController::class, 'index']);
-});
+use PHPdot\Routing\Route\RouteGroup;
+
+$router->group('/admin', function (RouteGroup $group) {
+    $group->addRoute('GET', '/dashboard', [DashboardController::class, 'index']);
+})->middleware(AdminAuthMiddleware::class);
 ```
 
 `UrlGenerator` builds URLs for named routes in reverse, and PSR-15 middleware runs as a pipeline around

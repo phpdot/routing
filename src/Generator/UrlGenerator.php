@@ -13,18 +13,26 @@ declare(strict_types=1);
 
 namespace PHPdot\Routing\Generator;
 
-use InvalidArgumentException;
+use PHPdot\Routing\Exception\RoutingException;
 use PHPdot\Routing\Route\RouteCollection;
+use PHPdot\Routing\Utils\Path;
 
 final class UrlGenerator
 {
     /**
      * Generates URLs for named routes from the registered collection.
      *
+     * The base path is part of generation, not just of matching: the router
+     * strips it from incoming requests, so a URL generated without it points
+     * outside the deployment and 404s. An app served from /app must be linked
+     * to as /app/…, and this is the only place that can know it.
+     *
      * @param RouteCollection $routes Collection of registered routes
+     * @param string $basePath Deployment prefix, '' or '/prefix' (no trailing slash)
      */
     public function __construct(
         private readonly RouteCollection $routes,
+        private readonly string $basePath = '',
     ) {}
 
     /**
@@ -34,7 +42,7 @@ final class UrlGenerator
      * @param array<string, string|int> $parameters Route parameter values
      * @param array<string, string|int> $query Query string parameters
      *
-     * @throws InvalidArgumentException If route name not found or required parameter missing
+     * @throws RoutingException If route name not found or required parameter missing
      *
      * @return string Generated URL path with optional query string
      */
@@ -42,7 +50,7 @@ final class UrlGenerator
     {
         $route = $this->routes->findByName($name);
         if ($route === null) {
-            throw new InvalidArgumentException("Route '{$name}' not found.");
+            throw new RoutingException("Route '{$name}' not found.");
         }
 
         $segments = $route->getSegments();
@@ -58,7 +66,7 @@ final class UrlGenerator
             $paramName = $parsed['name'];
 
             if (isset($parameters[$paramName])) {
-                $path[] = (string) $parameters[$paramName];
+                $path[] = $this->encodeSegment((string) $parameters[$paramName], $parsed['wildcard']);
                 continue;
             }
 
@@ -67,13 +75,13 @@ final class UrlGenerator
             }
 
             if ($parsed['wildcard']) {
-                throw new InvalidArgumentException("Wildcard parameter '{$paramName}' is required for route '{$name}'.");
+                throw new RoutingException("Wildcard parameter '{$paramName}' is required for route '{$name}'.");
             }
 
-            throw new InvalidArgumentException("Missing required parameter '{$paramName}' for route '{$name}'.");
+            throw new RoutingException("Missing required parameter '{$paramName}' for route '{$name}'.");
         }
 
-        $url = '/' . implode('/', $path);
+        $url = Path::deployed($this->basePath, $path);
 
         if ($query !== []) {
             $url .= '?' . http_build_query($query);
@@ -88,7 +96,7 @@ final class UrlGenerator
      * @param string $name Route name
      * @param array<string, string|int> $parameters Route parameter values
      *
-     * @throws InvalidArgumentException If route name not found or required parameter missing
+     * @throws RoutingException If route name not found or required parameter missing
      *
      * @return string Generated URL path
      */
@@ -134,5 +142,27 @@ final class UrlGenerator
             'optional' => $optional,
             'wildcard' => $type === '*',
         ];
+    }
+
+    /**
+     * Percent-encode a parameter value for a URL path segment.
+     *
+     * Wildcard values are multi-segment catch-all paths: each segment is
+     * encoded, but the separating slashes are preserved so the path structure
+     * survives. A slash in an ordinary single-segment parameter is encoded
+     * (it would otherwise escape its segment and corrupt the path).
+     *
+     * @param string $value
+     * @param bool $wildcard
+     *
+     * @return string
+     */
+    private function encodeSegment(string $value, bool $wildcard): string
+    {
+        if (!$wildcard) {
+            return rawurlencode($value);
+        }
+
+        return implode('/', array_map('rawurlencode', explode('/', $value)));
     }
 }

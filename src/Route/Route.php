@@ -5,8 +5,12 @@ declare(strict_types=1);
 /**
  * Route
  *
- * Immutable route definition. Created during registration,
- * compiled into the trie, matched at dispatch time.
+ * Route definition. Created during registration, compiled into the trie,
+ * matched at dispatch time. Its methods and handler are fixed at
+ * construction; its pattern is settled by registration time too, with one
+ * exception — applying a scope prepends that scope's path, which is why the
+ * pattern and its parsed segments are not readonly. Both are final before
+ * compile(), so the trie is built from a pattern nothing can still change.
  *
  * @author Omar Hamdan <omar@phpdot.com>
  * @license MIT
@@ -15,7 +19,8 @@ declare(strict_types=1);
 namespace PHPdot\Routing\Route;
 
 use Closure;
-use InvalidArgumentException;
+use PHPdot\Routing\Exception\RoutingException;
+use PHPdot\Routing\Utils\Path;
 use Psr\Http\Server\MiddlewareInterface;
 
 final class Route
@@ -51,8 +56,8 @@ final class Route
      */
     public function __construct(
         private readonly array $methods,
-        private readonly string $pattern,
-        private readonly array $segments,
+        private string $pattern,
+        private array $segments,
         private readonly Closure|string|array $handler,
     ) {}
 
@@ -188,7 +193,7 @@ final class Route
      *
      * @param string|Closure $middleware Middleware class name or inline closure
      *
-     * @throws InvalidArgumentException If the middleware class does not implement MiddlewareInterface
+     * @throws RoutingException If the middleware class does not implement MiddlewareInterface
      *
      * @return self Fluent return
      */
@@ -197,10 +202,10 @@ final class Route
         if (is_string($middleware)) {
             $implements = class_implements($middleware, true);
             if (!is_array($implements)) {
-                throw new InvalidArgumentException('Invalid middleware');
+                throw new RoutingException('Invalid middleware');
             }
             if (!in_array(MiddlewareInterface::class, $implements, true)) {
-                throw new InvalidArgumentException('Invalid middleware');
+                throw new RoutingException('Invalid middleware');
             }
             if (!in_array($middleware, $this->middlewares, true)) {
                 $this->middlewares[] = $middleware;
@@ -239,21 +244,33 @@ final class Route
     }
 
     /**
-     * Apply a scope bundle to this route.
+     * Apply a scope bundle to this route: its path becomes a prefix on the
+     * pattern, its hosts replace the route's own, its middleware runs before
+     * the route's own.
+     *
+     * A route carries at most one scope, and the guard below is what keeps the
+     * prefix applied exactly once — a second application would silently
+     * produce '/admin/admin/sdp' rather than fail.
      *
      * @param RouteScope $scope Scope to apply
      *
-     * @throws InvalidArgumentException If a scope is already set
+     * @throws RoutingException If a scope is already set
      *
      * @return self Fluent return
      */
     public function scope(RouteScope $scope): self
     {
         if ($this->scope !== null) {
-            throw new InvalidArgumentException('Scope already set');
+            throw new RoutingException('Scope already set');
         }
 
         $this->scope = $scope;
+
+        $scope_path = $scope->getPath();
+        if ($scope_path !== null && trim($scope_path, '/') !== '') {
+            $this->pattern = trim($scope_path, '/') . '/' . ltrim($this->pattern, '/');
+            $this->segments = Path::segments($this->pattern);
+        }
 
         $scope_hosts = $scope->getHosts();
         if ($scope_hosts !== []) {

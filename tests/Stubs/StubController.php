@@ -25,4 +25,14 @@ final class StubController implements ControllerInterface
     {
         return new Response(201, [], 'created');
     }
+
+    /**
+     * Returns a non-Response to exercise the fail-loud contract.
+     *
+     * @return array<int, string>
+     */
+    public function broken(ServerRequestInterface $request): array
+    {
+        return ['not', 'a', 'response'];
+    }
 }

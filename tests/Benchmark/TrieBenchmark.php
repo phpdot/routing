@@ -116,6 +116,7 @@ final class TrieBenchmark
 
     /**
      * @param array<array{methods: array<string>, pattern: string, segments: array<string>}> $routeDefs
+     *
      * @return array<array{method: string, path: string}>
      */
     private static function generateRequests(array $routeDefs, int $count): array

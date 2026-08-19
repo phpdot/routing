@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace PHPdot\Routing\Tests\Unit;
 
-use InvalidArgumentException;
 use PHPdot\Routing\Compiler\PatternRegistry;
 use PHPdot\Routing\Compiler\RouteCompiler;
+use PHPdot\Routing\Exception\RoutingException;
 use PHPdot\Routing\Route\Route;
 use PHPdot\Routing\Route\RouteCollection;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -40,7 +40,7 @@ final class SecurityTest extends TestCase
     {
         $registry = new PatternRegistry();
 
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(RoutingException::class);
         $this->expectExceptionMessage('unsafe regex');
 
         $registry->add('evil', $pattern);
@@ -51,7 +51,7 @@ final class SecurityTest extends TestCase
     {
         $registry = new PatternRegistry();
 
-        $this->expectException(InvalidArgumentException::class);
+        $this->expectException(RoutingException::class);
         $this->expectExceptionMessage('Invalid regex');
 
         $registry->add('broken', '[invalid');

@@ -43,6 +43,30 @@ final class Path
     }
 
     /**
+     * Build a deployed path: the base path, then the segments.
+     *
+     * The ONE place an outgoing path is assembled. URL generation and the
+     * exposed-route map both call it, because a client that builds links from
+     * the exposed map must produce byte-identical strings to the ones the
+     * server generates — they get compared, cached and matched against each
+     * other. Deriving one from the pattern and the other from the segments is
+     * how '/admin/sdp/' and '/admin/sdp' came to mean the same route.
+     *
+     * @param string $basePath Deployment prefix, '' or '/prefix' (no trailing slash)
+     * @param array<string> $segments Path segments to join
+     *
+     * @return string Assembled URL path with leading slash
+     */
+    public static function deployed(string $basePath, array $segments): string
+    {
+        if ($segments === []) {
+            return $basePath === '' ? '/' : $basePath;
+        }
+
+        return $basePath . '/' . implode('/', $segments);
+    }
+
+    /**
      * Get the first segment of a path.
      *
      * @param string $path URL path
