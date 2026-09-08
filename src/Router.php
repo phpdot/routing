@@ -281,6 +281,16 @@ class Router implements RequestHandlerInterface
     }
 
     /**
+     * Every registered scope, keyed by name, in registration order.
+     *
+     * @return array<string, RouteScope>
+     */
+    public function getScopes(): array
+    {
+        return $this->scopes;
+    }
+
+    /**
      * Register a custom pattern type.
      *
      * @param string $regex
@@ -475,7 +485,16 @@ class Router implements RequestHandlerInterface
     /**
      * List all registered routes with their metadata.
      *
-     * @return array<int, array<string, mixed>>
+     * @return list<array{
+     *     methods: array<string>,
+     *     pattern: string,
+     *     name: string|null,
+     *     handler: string,
+     *     middlewares: array<string|Closure>,
+     *     hosts: array<string>,
+     *     where: array<string, string>,
+     *     scope: string|null,
+     * }>
      */
     public function list(): array
     {

@@ -28,14 +28,20 @@
     },
     "require-dev": {
         "friendsofphp/php-cs-fixer": "^3.94",
-        "phpdot/container": "^0.2",
-        "phpdot/http": "^0.2",
+        "phpdot/attribute": "^0.3",
+        "phpdot/console": "^0.3",
+        "phpdot/container": "^0.3",
+        "phpdot/http": "^0.3",
         "phpstan/phpstan": "^2.0",
         "phpstan/phpstan-strict-rules": "^2.0",
-        "phpunit/phpunit": "^13.0"
+        "phpunit/phpunit": "^13.0",
+        "symfony/console": "^8.0"
     },
     "suggest": {
-        "phpdot/container": "Autowires the container-attribute services and #[Config] DTOs declared in src (the attributes stay inert until reflected, so standalone consumers don't need it installed)."
+        "phpdot/attribute": "Enables RouteDiscovery: route providers are found by interface, the same scan the rest of the ecosystem uses.",
+        "phpdot/console": "Enables the routing:list and routing:scopes commands (the classes stay inert until something loads it, so standalone consumers do not need it installed).",
+        "phpdot/container": "Autowires the container-attribute services and #[Config] DTOs declared in src (the attributes stay inert until reflected, so standalone consumers don't need it installed).",
+        "symfony/console": "The routing:list and routing:scopes commands are Symfony console commands; the classes stay inert until a console loads them."
     },
     "autoload": {
         "psr-4": {
